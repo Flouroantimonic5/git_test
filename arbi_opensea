@@ -1,0 +1,91 @@
+use reqwest::Error;
+use serde::Deserialize;
+use serde_json::Value;
+use std::collections::HashMap;
+
+#[derive(Deserialize, Debug)]
+struct Asset {
+    id: String,
+    sell_orders: Option<Vec<Value>>,
+}
+
+#[derive(Deserialize, Debug)]
+struct Collection {
+    floor_price: f64,
+}
+
+#[derive(Deserialize, Debug)]
+struct CollectionResponse {
+    collection: Collection,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let top_100_collections = get_top_100_collections().await?;
+
+    for (collection_slug, floor_price) in top_100_collections {
+        let low_price_threshold = floor_price / 100.0;
+        println!(
+            "Checking collection {} with floor price {} and low price threshold {}",
+            collection_slug, floor_price, low_price_threshold
+        );
+
+        let assets = get_collection_assets(&collection_slug).await?;
+
+        for asset in assets {
+            if let Some(sell_orders) = asset.sell_orders {
+                for sell_order in sell_orders {
+                    if let Some(price) = get_price_from_sell_order(sell_order) {
+                        if price <= low_price_threshold {
+                            println!(
+                                "Asset {} in collection {} found with price {}",
+                                asset.id, collection_slug, price
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn get_top_100_collections() -> Result<HashMap<String, f64>, Error> {
+    let url = "https://api.opensea.io/api/v1/collections?limit=100";
+    let response: Vec<Value> = reqwest::get(url).await?.json().await?;
+    let mut collections = HashMap::new();
+
+    for collection in response {
+        let collection_slug = collection["slug"].as_str().unwrap().to_string();
+        let collection_response: CollectionResponse = reqwest::get(
+            &format!("https://api.opensea.io/api/v1/collection/{}", collection_slug),
+        )
+        .await?
+        .json()
+        .await?;
+
+        collections.insert(collection_slug, collection_response.collection.floor_price);
+    }
+
+    Ok(collections)
+}
+
+async fn get_collection_assets(collection_slug: &str) -> Result<Vec<Asset>, Error> {
+    let url = format!(
+        "https://api.opensea.io/api/v1/assets?collection={}&order_by=sale_count&order_direction=desc&limit=50",
+        collection_slug
+    );
+    let response: Value = reqwest::get(&url).await?.json().await?;
+    let assets: Vec<Asset> = serde_json::from_value(response["assets"].clone()).unwrap();
+
+    Ok(assets)
+}
+
+fn get_price_from_sell_order(sell_order: Value) -> Option<f64> {
+    let price_in_wei = sell_order["current_price"].as_str()?;
+    let price_in_eth = wei_to_eth(price_in_wei)?;
+    Some(price_in_eth)
+}
+
+fn wei_to
